@@ -1,0 +1,2 @@
+# deepseek_translate_for_youself
+实现在任何输入框文本自动翻译成英文并进行替换
