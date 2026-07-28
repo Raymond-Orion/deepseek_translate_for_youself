@@ -1,9 +1,25 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+; ==========================================
+; === 1. 自动请求管理员权限 (高权限运行) ===
+; ==========================================
+if not A_IsAdmin {
+    Try {
+        Run '*RunAs "' A_ScriptFullPath '"'
+        ExitApp()
+    }
+}
+
 ServerURL := "http://127.0.0.1:8989/translate"
 Global ExplainURL := "http://127.0.0.1:8989/explain"
 Global g_ExplainGui := ""
+
+; 全局划词图标 GUI 与状态控制
+Global g_IconGui := ""
+Global g_SelectedText := ""
+Global g_MouseDownX := 0
+Global g_MouseDownY := 0
 
 ; ==========================================
 ; === 全局状态记录，用于 Ctrl+Z 完美复原 ===
@@ -12,12 +28,152 @@ Global g_OriginalText := ""
 Global g_IsSelectAll := false
 Global g_AwaitUndo := false
 
-~*LButton::CancelUndo()
-~*RButton::CancelUndo()
+~*LButton::
+{
+    CancelUndo()
+    ; 记录鼠标按下时的坐标，用于判断拖拽距离
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&x, &y)
+    Global g_MouseDownX := x
+    Global g_MouseDownY := y
+    
+    ; 如果图标已存在，点击图标以外的地方自动销毁图标
+    if (g_IconGui != "") {
+        MouseGetPos(,, &targetHwnd)
+        if (targetHwnd != g_IconGui.Hwnd) {
+            DestroyIconGui()
+        }
+    }
+}
+
+~*RButton::
+{
+    CancelUndo()
+    DestroyIconGui()
+}
 
 CancelUndo() {
     global g_AwaitUndo
     g_AwaitUndo := false
+}
+
+; ==========================================
+; === 2. 划词核心监听 (鼠标抬起触发 - 极严防误触) ===
+; ==========================================
+~LButton Up::
+{
+    ; 防误触 1：按住 Ctrl / Alt / Win 等修饰键拖拽（如 VSCode 多光标选择）时不触发
+    if GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P") || GetKeyState("LWin", "P") || GetKeyState("RWin", "P") {
+        return
+    }
+
+    ; 防误触 2：拖拽距离过小（低于 10 像素，视为普通点击/双击空行/微小抖动）不触发
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&upX, &upY)
+    dist := Sqrt((upX - g_MouseDownX)**2 + (upY - g_MouseDownY)**2)
+    if (dist < 10) {
+        return
+    }
+
+    ; 防误触 3：文本光标形态 (IBeam) 下微小移动不触发（防止在 VSCode/IDE 中改代码或点空行时弹窗）
+    if (A_Cursor == "IBeam" && dist < 15) {
+        return
+    }
+
+    ; 稍作停顿，等待系统选中状态稳定
+    Sleep 35
+
+    ; 静默备份剪贴板并尝试提取文本
+    ClipSaved := ClipboardAll()
+    A_Clipboard := ""
+    Send "^c"
+
+    ; 如果 250ms 内没抓到文本，说明未选中任何内容，恢复剪贴板并退出
+    if !ClipWait(0.25, 1) {
+        RestoreClipboard(ClipSaved)
+        return
+    }
+
+    CapturedText := A_Clipboard
+
+    ; 防误触 4【核心】：严密检查内容！
+    ; 如果选中的是空字符串、纯空格、纯 Tab、纯换行或全空白代码行，绝对不触发！
+    if (CapturedText == "" || RegExMatch(CapturedText, "^\s*$")) {
+        RestoreClipboard(ClipSaved)
+        return
+    }
+
+    ; 防误触 5：只选中了单字符且为常见标点/括号（如在代码里点了个 ; 或 }），跳过
+    CleanText := Trim(CapturedText, " `t`r`n")
+    if (StrLen(CleanText) == 1 && RegExMatch(CleanText, '^[;,\.\:\(\)\{\}\[\]"]$')) {
+        RestoreClipboard(ClipSaved)
+        return
+    }
+
+    ; 安全恢复剪贴板
+    RestoreClipboard(ClipSaved)
+
+    ; 校验通过：保存文本并显示 🔍 悬浮图标
+    Global g_SelectedText := CleanText
+    ShowHoverIcon(upX + 12, upY + 12)
+}
+
+; ==========================================
+; === 3. 浅色微型悬浮 🔍 图标 GUI 设计 ===
+; ==========================================
+ShowHoverIcon(x, y)
+{
+    Global g_IconGui
+    DestroyIconGui()
+
+    ; 创建无边框微型 GUI (32x32)
+    g_IconGui := Gui("-Caption +AlwaysOnTop +ToolWindow +Owner", "HoverIcon")
+    g_IconGui.BackColor := "FFFFFF" ; 纯白背景
+
+    ; 添加 🔍 图标文本按钮
+    BtnText := g_IconGui.Add("Text", "x0 y0 w32 h32 Center +BackgroundTrans c333333", "🔍")
+    BtnText.SetFont("s13", "Segoe UI Emoji")
+
+    ; 悬停与点击事件绑定
+    BtnText.OnEvent("Click", OnIconClick)
+    
+    ; 窗口显示
+    g_IconGui.Show("x" x " y" y " w32 h32 NoActivate")
+    
+    ; 监听鼠标悬停动作变色
+    OnMessage(0x0200, WM_MOUSEMOVE)
+
+    ; 3.5秒内无操作自动消隐
+    SetTimer DestroyIconGui, -3500
+}
+
+WM_MOUSEMOVE(wParam, lParam, msg, hwnd)
+{
+    Global g_IconGui
+    if (g_IconGui != "" && hwnd == g_IconGui.Hwnd) {
+        g_IconGui.BackColor := "E2E8F0" ; Hover 时变为浅灰色
+    }
+}
+
+OnIconClick(*)
+{
+    Global g_SelectedText
+    TextToRun := g_SelectedText
+    DestroyIconGui()
+    
+    if (TextToRun != "") {
+        ProcessExplainText(TextToRun)
+    }
+}
+
+DestroyIconGui()
+{
+    Global g_IconGui
+    if (g_IconGui != "") {
+        Try g_IconGui.Destroy()
+        g_IconGui := ""
+    }
+    SetTimer DestroyIconGui, 0
 }
 
 ; ========== 快捷键定义 ==========
@@ -34,7 +190,7 @@ CancelUndo() {
     ProcessTranslation(true)
 }
 
-; Ctrl + Shift + 9: 屏幕居中、支持 Markdown 表格与流式解析
+; Ctrl + Shift + 9: 保留快捷键触发逻辑
 ^+9::
 {
     Send "{Ctrl up}{Shift up}"
@@ -47,9 +203,6 @@ CancelUndo() {
 
 ProcessExplain()
 {
-    global ExplainURL, g_ExplainGui
-    
-    ; 1. 抓取文本
     ClipSaved := ClipboardAll()
     A_Clipboard := ""
     Send "^c"
@@ -61,13 +214,21 @@ ProcessExplain()
     }
     
     TextToExplain := A_Clipboard
-    if (TextToExplain == "") {
-        ShowYellowTip("未检测到文本")
-        RestoreClipboard(ClipSaved)
+    RestoreClipboard(ClipSaved)
+    
+    if (TextToExplain == "" || RegExMatch(TextToExplain, "^\s*$")) {
+        ShowYellowTip("未检测到有效文本")
         return
     }
+
+    ProcessExplainText(Trim(TextToExplain, " `t`r`n"))
+}
+
+ProcessExplainText(TextToExplain)
+{
+    Global ExplainURL, g_ExplainGui
     
-    ; 2. 准备 深色GUI
+    ; 准备 深色GUI
     if (g_ExplainGui != "") {
         Try g_ExplainGui.Destroy()
     }
@@ -82,17 +243,14 @@ ProcessExplain()
     CloseBtn.SetFont("s14 bold", "Consolas")
     CloseBtn.OnEvent("Click", (*) => g_ExplainGui.Destroy())
     
-    ; 加入隐藏的 Web 渲染引擎，用于解析 Markdown 和表格
     wbCtrl := g_ExplainGui.Add("ActiveX", "x10 y35 w780 h455 Hidden", "Shell.Explorer")
     WB := wbCtrl.Value
     
     g_ExplainGui.OnEvent("Escape", (*) => g_ExplainGui.Destroy())
     OnMessage(0x0201, WM_LBUTTONDOWN)
     
-    ; 3. 屏幕居中展示
     g_ExplainGui.Show("w800 h500 NoActivate Center")
     
-    ; 注入定制的 HTML/CSS 和实时解析脚本
     HTML := "<!DOCTYPE html><html><head><meta http-equiv='X-UA-Compatible' content='IE=edge'>"
     HTML .= "<style>"
     HTML .= "body { background-color: #1E1E1E; color: #E0E0E0; font-family: 'Times New Roman', 'Microsoft YaHei', sans-serif; font-size: 17px; line-height: 1.55; padding: 15px; margin: 0; border: none; overflow-y: auto; }"
@@ -109,8 +267,6 @@ ProcessExplain()
     HTML .= "function updateContent(text) {"
     HTML .= "    var html = text.replace(/\r/g, '')"
     HTML .= "        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');"
-    
-    ; 优化表格前后的空白行裁剪逻辑
     HTML .= "    var lines = html.split('\n');"
     HTML .= "    var inTable = false;"
     HTML .= "    var processedLines = [];"
@@ -138,7 +294,6 @@ ProcessExplain()
     HTML .= "    }"
     HTML .= "    if (inTable) { processedLines.push('</table>'); }"
     HTML .= "    html = processedLines.join('\n');"
-
     HTML .= "    html = html"
     HTML .= "        .replace(/\n*###\s+(.*)/g, '<div style=\'font-size: 18px; font-weight: bold; color: #FFFFFF; margin-top: 10px; margin-bottom: 2px;\'>$1</div>')" 
     HTML .= "        .replace(/\n*##\s+(.*)/g, '<div style=\'font-size: 20px; font-weight: bold; color: #FFFFFF; margin-top: 12px; margin-bottom: 2px;\'>$1</div>')" 
@@ -159,7 +314,6 @@ ProcessExplain()
     
     wbCtrl.Visible := true
     
-    ; 4. 发起 HTTP 流式请求
     Try {
         req := ComObject("Msxml2.ServerXMLHTTP.6.0")
         req.open("POST", ExplainURL, true)
@@ -194,8 +348,6 @@ ProcessExplain()
     } Catch as err {
         Try WB.document.parentWindow.updateContent("`n`n[网络或请求错误: " err.Message "]")
     }
-    
-    RestoreClipboard(ClipSaved)
 }
 
 ShowYellowTip(Msg) {
@@ -212,7 +364,7 @@ ShowYellowTip(Msg) {
 }
 
 WM_LBUTTONDOWN(wParam, lParam, msg, hwnd) {
-    global g_ExplainGui
+    Global g_ExplainGui
     if (g_ExplainGui != "" && hwnd == g_ExplainGui.Hwnd) {
         PostMessage(0xA1, 2, 0, hwnd) 
     }
@@ -225,7 +377,7 @@ WM_LBUTTONDOWN(wParam, lParam, msg, hwnd) {
 #HotIf g_AwaitUndo
 $^z::
 {
-    global g_AwaitUndo, g_OriginalText, g_IsSelectAll
+    Global g_AwaitUndo, g_OriginalText, g_IsSelectAll
     g_AwaitUndo := false 
     
     if (g_IsSelectAll) {
@@ -247,7 +399,7 @@ $^z::
 
 ProcessTranslation(SelectAll)
 {
-    global g_OriginalText, g_IsSelectAll, g_AwaitUndo
+    Global g_OriginalText, g_IsSelectAll, g_AwaitUndo
     ClipSaved := ClipboardAll()
     A_Clipboard := ""
     
@@ -264,7 +416,7 @@ ProcessTranslation(SelectAll)
     }
     
     OriginalText := A_Clipboard
-    if (OriginalText == "") {
+    if (OriginalText == "" || RegExMatch(OriginalText, "^\s*$")) {
         ShowTip("文本为空！")
         RestoreClipboard(ClipSaved)
         return
@@ -294,7 +446,7 @@ ProcessTranslation(SelectAll)
 
 RequestTranslation(TextToTranslate)
 {
-    global ServerURL
+    Global ServerURL
     Try {
         req := ComObject("Msxml2.XMLHTTP")
         req.open("POST", ServerURL, true)
