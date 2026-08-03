@@ -127,7 +127,7 @@ ShowIcon(x, y)
     ; 绑定左键点击消息 (WM_LBUTTONDOWN)[cite: 1]
     OnMessage(0x0201, OnIconClick)
 
-    SetTimer(HideIcon, -2000)
+    SetTimer(HideIcon, -20000)
     keyHook.Start()
 }
 
