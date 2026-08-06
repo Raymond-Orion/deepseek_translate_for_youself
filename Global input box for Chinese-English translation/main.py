@@ -29,7 +29,7 @@ def translate():
     if not api_key:
         return jsonify({"error": "API Key 未设置"}), 400
 
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    client = OpenAI(api_key=api_key, base_url="[https://api.deepseek.com](https://api.deepseek.com)")
     try:
         response = client.chat.completions.create(
             model=target_model,
@@ -55,4 +55,4 @@ if __name__ == '__main__':
     try:
         app_flask.run(port=15051, debug=False, use_reloader=False)
     except OSError as e:
-        print(f"❌ 端口 15051 被占用，请杀死残留进程！\n详情: {e}")
+        print(f"❌ 端口 15051 被占用，请杀死残留进程！\\n详情: {e}")
