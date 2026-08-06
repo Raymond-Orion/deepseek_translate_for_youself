@@ -65,14 +65,14 @@ SendRequest(endpoint, text)
     try
     {
         http := ComObject("WinHttp.WinHttpRequest.5.1")
-        http.Open("POST", "http://127.0.0.1:15051" . endpoint, true)
+        http.Open("POST", "[http://127.0.0.1:15051](http://127.0.0.1:15051)" . endpoint, true)
         http.SetRequestHeader("Content-Type", "application/json;charset=UTF-8")
         
-        safeText := StrReplace(text, "\", "\\")
-        safeText := StrReplace(safeText, "`"", "\`"")
-        safeText := StrReplace(safeText, "`n", "\n")
-        safeText := StrReplace(safeText, "`r", "\r")
-        safeText := StrReplace(safeText, "`t", "\t")
+        safeText := StrReplace(text, "\\", "\\\\")
+        safeText := StrReplace(safeText, "`"", "\\`"")
+        safeText := StrReplace(safeText, "`n", "\\n")
+        safeText := StrReplace(safeText, "`r", "\\r")
+        safeText := StrReplace(safeText, "`t", "\\t")
         
         body := '{"text": "' . safeText . '"}'
         http.Send(body)
